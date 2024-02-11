@@ -3,7 +3,9 @@
 
 ## Install
 ```sh
-go install -x github.com/wasmup/tcpproxy@latest
+go install -x -ldflags=-s github.com/wasmup/tcpproxy@latest
+
+file $(which tcpproxy)
 ```
 
 
