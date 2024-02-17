@@ -1,33 +1,57 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"os"
+	"runtime"
+	"sync/atomic"
+	"time"
 )
 
 func main() {
-	if len(os.Args) != 3 {
-		log.Println("Run:\ntcpproxy localhost:6379 remote:6379")
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{AddSource: true})))
+	slog.Info(runtime.Version())
+
+	a := os.Args[1:]
+	info := len(a) > 2 && a[2] == "-log"
+	if info {
+		a = a[:2]
+	}
+	if len(a) != 2 {
+		fmt.Println("Run:\ntcpproxy localhost:6379 remote:6379")
+		fmt.Println("Run:\ntcpproxy localhost:6379 remote:6379 -log")
 		return
 	}
+	src := a[0]
+	dst := a[1]
 
-	src := os.Args[1]
 	listener, err := net.Listen("tcp", src)
 	if err != nil {
-		log.Println("Error listening on"+src, err)
+		slog.Error("listening", "src", src, "err", err)
 		return
 	}
 	defer listener.Close()
 
-	log.Println("Proxy server started. Listening on " + src)
+	slog.Info("Proxy server started. Listening", "src", src)
 
-	dst := os.Args[2]
+	var read, write, count atomic.Int64
+	if info {
+		go func() {
+			for {
+				time.Sleep(1 * time.Second)
+				fmt.Println("bytes read", read.Load(), "write", write.Load(), "count", count.Load())
+			}
+		}()
+	}
+
 	for {
 		local, err := listener.Accept()
 		if err != nil {
-			log.Println("Error accepting connection:", err)
+			slog.Error("accepting connection", "err", err)
 			continue
 		}
 
@@ -35,23 +59,32 @@ func main() {
 			defer local.Close()
 			remote, err := net.Dial("tcp", dst)
 			if err != nil {
-				log.Println("Error connecting to remote Redis server:", err)
+				slog.Error("connecting to remote Redis server", "err", err)
 				return
 			}
 			defer remote.Close()
-			log.Println(local.RemoteAddr(), "<---->", local.LocalAddr(), "=Go=", remote.LocalAddr(), "<----->", remote.RemoteAddr())
+			if info {
+				log.Println(local.RemoteAddr(), "<---->", local.LocalAddr(), "=Go=", remote.LocalAddr(), "<----->", remote.RemoteAddr())
+			}
+			count.Add(1)
 
 			go func() {
-				_, err := io.Copy(remote, local)
+				defer local.Close()
+				defer remote.Close()
+
+				n, err := io.Copy(remote, local)
 				if err != nil {
-					log.Println("Error copying data from local to remote:", err)
+					slog.Error("copying data from local to remote", "err", err)
 				}
+				write.Add(n)
 			}()
 
-			_, err = io.Copy(local, remote)
+			n, err := io.Copy(local, remote)
 			if err != nil {
-				log.Println("Error copying data from remote to local:", err)
+				slog.Error("copying data from remote to local", "err", err)
 			}
+			read.Add(n)
+			count.Add(-1)
 		}(local)
 	}
 }
